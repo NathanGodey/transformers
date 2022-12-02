@@ -172,8 +172,16 @@ class MantaConfig(PretrainedConfig):
             and any(size != byte_embedding_dim for _, size in pooling_kernel_size)
         ):
             raise ValueError(
-                f"`pooling_kernel_size`: {pooling_kernel_size} is not a valid list of kernels when `pooling_depthwise_convolution` is True. Please set all"
-                f"kernel dimensions to {byte_embedding_dim} (=`byte_embedding_dim`) or `pooling_depthwise_convolution` to False."
+                f"`pooling_kernel_size`: {pooling_kernel_size} is not a valid list of kernels when "
+                f"`pooling_depthwise_convolution` is True. Please set all kernel dimensions to {byte_embedding_dim}"
+                f"(=`byte_embedding_dim`) or `pooling_depthwise_convolution“ to False."
+            )
+
+        tie_word_embeddings = kwargs.pop("tie_word_embeddings", False)
+        if tie_word_embeddings and byte_embedding_dim != d_model:
+            raise ValueError(
+                f"The input embedding dimension (`byte_embedding_dim={byte_embedding_dim}`) is not the same as the "
+                f"model hidden dimension (`d_model={d_model}`), making it impossible to tie input and output weights."
             )
 
         # for backwards compatibility
@@ -184,6 +192,6 @@ class MantaConfig(PretrainedConfig):
             pad_token_id=pad_token_id,
             eos_token_id=eos_token_id,
             is_encoder_decoder=is_encoder_decoder,
-            tie_word_embeddings=kwargs.pop("tie_word_embeddings", False),
+            tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
