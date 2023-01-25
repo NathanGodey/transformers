@@ -31,8 +31,6 @@ from ...models.t5.configuration_t5 import T5Config
 from ...models.t5.modeling_t5 import (
     __HEAD_MASK_WARNING_MSG,
     T5Attention,
-    T5EncoderModel,
-    T5Model,
     T5Stack,
 )
 from ...utils import (
@@ -73,14 +71,86 @@ def pad_block_embeddings(block_embeddings, pad_length):
     return torch.cat([block_embeddings[:, :pad_length, :], padding_tensor], dim=1)
 
 
-@add_end_docstrings(
+@add_end_docstrings()
+@dataclass
+class MantaSeq2SeqLMOutput(Seq2SeqLMOutput):
     """
+    Base class for Manta encoder's outputs that also contains : pre-computed hidden states that can speed up sequential
+    decoding.
+
+    Args:
+        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            Sequence of hidden-states at the output of the last layer of the decoder of the model.
+
+            If `past_key_values` is used only the last hidden-state of the sequences of shape `(batch_size, 1,
+            hidden_size)` is output.
+        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
+            `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
+
+            Contains pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
+            blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
+        decoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+
+            Hidden-states of the decoder at the output of each layer plus the optional initial embedding outputs.
+        decoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights of the decoder, after the attention softmax, used to compute the weighted average in the
+            self-attention heads.
+        cross_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights of the decoder's cross-attention layer, after the attention softmax, used to compute the
+            weighted average in the cross-attention heads.
+        encoder_last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            Sequence of hidden-states at the output of the last layer of the encoder of the model.
+        encoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+
+            Hidden-states of the encoder at the output of each layer plus the optional initial embedding outputs.
+        encoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights of the encoder, after the attention softmax, used to compute the weighted average in the
+            self-attention heads.
         frontier_predictions: (`torch.FloatTensor`, *optional*, of shape `(batch_size, sequence_length, 1)`):
             Probability scores of being a frontier as predicted by the FrontierPredictor module.
     """
-)
+
+    frontier_predictions: Optional[torch.FloatTensor] = None
+
+
 @dataclass
-class MantaSeq2SeqLMOutput(Seq2SeqLMOutput):
+class MantaBaseModelOutput(BaseModelOutput):
+    """
+    Base class for Manta's outputs, with potential hidden states, attentions and Manta's frontier predictions.
+
+    Args:
+        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            Sequence of hidden-states at the output of the last layer of the model.
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+
+            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+        frontier_predictions: (`torch.FloatTensor`, *optional*, of shape `(batch_size, sequence_length, 1)`):
+            Probability scores of being a frontier as predicted by the FrontierPredictor module.
+    """
+
     frontier_predictions: Optional[torch.FloatTensor] = None
 
 
@@ -415,13 +485,12 @@ class MantaPreTrainedModel(PreTrainedModel):
         return shifted_input_ids
 
 
-class MantaModel(MantaPreTrainedModel):
-    _keys_to_ignore_on_load_missing = [
-        r"encoder_decoder.encoder.embed_tokens.weight",
-        r"encoder_decoder.decoder.embed_tokens.weight",
-    ]
-    _keys_to_ignore_on_load_unexpected = [
-        r"encoder_decoder.decoder.block.0.layer.1.EncDecAttention.relative_attention_bias.weight",
+@add_start_docstrings(
+    "The bare Manta Model transformer outputting encoder's raw hidden-states without any specific head on top."
+)
+class MantaEncoderModel(MantaPreTrainedModel):
+    authorized_missing_keys = [
+        r"encoder.embed_tokens.weight",
     ]
 
     def __init__(self, config: MantaConfig):
@@ -447,14 +516,12 @@ class MantaModel(MantaPreTrainedModel):
             mean_pool=config.pooling_mean_pool,
         )
 
-        self.encoder_decoder = T5Model(
+        self.encoder = T5Stack(
             T5Config(
-                vocab_size=config.vocab_size,
                 d_model=config.d_model,
                 d_kv=config.d_kv,
                 d_ff=config.d_ff,
                 num_layers=config.num_layers,
-                num_decoder_layers=config.num_decoder_layers,
                 num_heads=config.num_heads,
                 relative_attention_num_buckets=config.relative_attention_num_buckets,
                 relative_attention_max_distance=config.relative_attention_max_distance,
@@ -462,10 +529,10 @@ class MantaModel(MantaPreTrainedModel):
                 layer_norm_epsilon=config.layer_norm_epsilon,
                 initializer_factor=config.initializer_factor,
                 feed_forward_proj=config.feed_forward_proj,
-                is_encoder_decoder=config.is_encoder_decoder,
-                use_cache=config.use_cache,
                 pad_token_id=config.pad_token_id,
                 eos_token_id=config.eos_token_id,
+                is_decoder=False,
+                use_cache=False,
             )
         )
 
@@ -477,12 +544,10 @@ class MantaModel(MantaPreTrainedModel):
 
     def set_input_embeddings(self, new_embeddings):
         self.byte_embeddings = new_embeddings
+        self.encoder.set_input_embeddings(new_embeddings)
 
     def get_encoder(self):
-        return self.encoder_decoder.encoder
-
-    def get_decoder(self):
-        return self.encoder_decoder.decoder
+        return self.encoder
 
     def _prune_heads(self, heads_to_prune):
         """
@@ -490,7 +555,7 @@ class MantaModel(MantaPreTrainedModel):
         class PreTrainedModel
         """
         for layer, heads in heads_to_prune.items():
-            self.encoder_decoder.encoder.layer[layer].attention.prune_heads(heads)
+            self.encoder_decoder.encoder.block[layer].layer[0].SelfAttention.prune_heads(heads)
 
     def _compute_pooled_representations(
         self,
@@ -507,9 +572,121 @@ class MantaModel(MantaPreTrainedModel):
 
         pooled_representations = self.pooler(frontier_predictions, byte_embeddings)
 
-        return pooled_representations
+        return pooled_representations, frontier_predictions
 
-    @replace_return_docstrings(output_type=Seq2SeqModelOutput, config_class=_CONFIG_FOR_DOC)
+    @replace_return_docstrings(output_type=MantaBaseModelOutput, config_class=_CONFIG_FOR_DOC)
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple[torch.FloatTensor], MantaBaseModelOutput]:
+        r"""
+        Returns:
+
+        Example:
+
+        ```python
+        >>> from transformers import ByT5Tokenizer, MantaEncoderModel
+
+        >>> tokenizer = ByT5Tokenizer.from_pretrained("google/byt5-small")
+        >>> model = MantaEncoderModel.from_pretrained("nthngdy/manta-small")
+        >>> input_ids = tokenizer(
+        ...     "Studies have been shown that owning a dog is good for you", return_tensors="pt"
+        ... ).input_ids  # Batch size 1
+        >>> outputs = model(input_ids=input_ids)
+        >>> last_hidden_states = outputs.last_hidden_state
+        ```"""
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        pooled_representations, frontier_predictions = self._compute_pooled_representations(
+            input_ids, attention_mask, inputs_embeds
+        )
+
+        encoder_outputs = self.encoder(
+            inputs_embeds=pooled_representations,
+            head_mask=head_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        if not return_dict:
+            return encoder_outputs + (frontier_predictions,)
+
+        return MantaBaseModelOutput(frontier_predictions=frontier_predictions, **encoder_outputs)
+
+
+class MantaModel(MantaPreTrainedModel):
+    _keys_to_ignore_on_load_missing = [
+        r"encoder_decoder.encoder.embed_tokens.weight",
+        r"encoder_decoder.decoder.embed_tokens.weight",
+    ]
+    _keys_to_ignore_on_load_unexpected = [
+        r"encoder_decoder.decoder.block.0.layer.1.EncDecAttention.relative_attention_bias.weight",
+    ]
+
+    def __init__(self, config: MantaConfig):
+        super().__init__(config)
+
+        self.encoder = MantaEncoderModel(config)
+
+        self.decoder_embeddings = nn.Embedding(config.vocab_size, config.d_model)
+        self.decoder = T5Stack(
+            T5Config(
+                vocab_size=config.vocab_size,
+                d_model=config.d_model,
+                d_kv=config.d_kv,
+                d_ff=config.d_ff,
+                num_layers=config.num_decoder_layers,
+                num_heads=config.num_heads,
+                relative_attention_num_buckets=config.relative_attention_num_buckets,
+                relative_attention_max_distance=config.relative_attention_max_distance,
+                dropout_rate=config.dropout_rate,
+                layer_norm_epsilon=config.layer_norm_epsilon,
+                initializer_factor=config.initializer_factor,
+                feed_forward_proj=config.feed_forward_proj,
+                use_cache=config.use_cache,
+                pad_token_id=config.pad_token_id,
+                eos_token_id=config.eos_token_id,
+                is_decoder=True,
+                is_encoder_decoder=False,
+            ),
+            self.decoder_embeddings,
+        )
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.encoder.get_input_embeddings()
+
+    def set_input_embeddings(self, new_embeddings):
+        self.encoder.set_input_embeddings(new_embeddings)
+
+    def get_encoder(self):
+        return self.encoder
+
+    def get_decoder(self):
+        return self.decoder
+
+    def _prune_heads(self, heads_to_prune):
+        """
+        Prunes heads of the model. heads_to_prune: dict of {layer_num: list of heads to prune in this layer} See base
+        class PreTrainedModel
+        """
+        for layer, heads in heads_to_prune.items():
+            self.encoder.layer[layer].attention.prune_heads(heads)
+
+    @replace_return_docstrings(output_type=MantaSeq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -527,7 +704,7 @@ class MantaModel(MantaPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[Tuple[torch.FloatTensor], Seq2SeqModelOutput]:
+    ) -> Union[Tuple[torch.FloatTensor], MantaSeq2SeqLMOutput]:
         r"""
         Returns:
 
@@ -559,24 +736,54 @@ class MantaModel(MantaPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        pooled_representations = self._compute_pooled_representations(input_ids, attention_mask, inputs_embeds)
+        if encoder_outputs is None:
+            encoder_outputs = self.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                head_mask=head_mask,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        elif return_dict and not isinstance(encoder_outputs, MantaBaseModelOutput):
+            encoder_outputs = MantaBaseModelOutput(
+                last_hidden_state=encoder_outputs[0],
+                hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
+                attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
+                frontier_predictions=encoder_outputs[3] if len(encoder_outputs) > 3 else None,
+            )
 
-        decoder_pooled_representations = self._compute_pooled_representations(
-            decoder_input_ids, decoder_attention_mask, decoder_inputs_embeds
-        )
+        hidden_states = encoder_outputs[0]
 
-        return self.encoder_decoder(
-            inputs_embeds=pooled_representations,
-            head_mask=head_mask,
-            decoder_head_mask=decoder_head_mask,
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=hidden_states,
+            encoder_attention_mask=attention_mask,
+            inputs_embeds=decoder_inputs_embeds,
+            head_mask=decoder_head_mask,
             cross_attn_head_mask=cross_attn_head_mask,
             past_key_values=past_key_values,
-            decoder_inputs_embeds=decoder_pooled_representations,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
-            encoder_outputs=encoder_outputs,
+        )
+
+        if not return_dict:
+            return decoder_outputs + encoder_outputs
+
+        return MantaSeq2SeqLMOutput(
+            last_hidden_state=decoder_outputs.last_hidden_state,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+            frontier_predictions=encoder_outputs.frontier_predictions,
         )
 
 
@@ -595,35 +802,16 @@ class MantaForConditionalGeneration(MantaPreTrainedModel):
         super().__init__(config)
         self.model_dim = config.d_model
 
-        self.byte_embeddings = nn.Embedding(config.vocab_size, config.byte_embedding_dim)
+        self.encoder = MantaEncoderModel(config)
 
-        self.frontier_predictor = MantaFrontierPredictor(
-            hidden_size=config.byte_embedding_dim,
-            num_layers=config.frontier_predictor_num_layers,
-            num_attention_heads=config.frontier_predictor_num_attention_heads,
-            dropout_rate=config.dropout_rate,
-            attention_window=config.frontier_predictor_attention_window,
-            max_length=config.max_length_inputs,
-        )
-
-        self.pooler = MantaCachedConvolutionPooling(
-            padding_length=config.max_length_encoder_decoder,
-            output_dim=config.d_model,
-            kernel_size=config.pooling_kernel_size,
-            hidden_dim=config.byte_embedding_dim,
-            depthwise_convolution=config.pooling_depthwise_convolution,
-            variance_regularization=config.pooling_variance_regularization,
-            mean_pool=config.pooling_mean_pool,
-        )
-
-        self.encoder_decoder = T5Model(
+        self.decoder_embeddings = nn.Embedding(config.vocab_size, config.d_model)
+        self.decoder = T5Stack(
             T5Config(
                 vocab_size=config.vocab_size,
                 d_model=config.d_model,
                 d_kv=config.d_kv,
                 d_ff=config.d_ff,
-                num_layers=config.num_layers,
-                num_decoder_layers=config.num_decoder_layers,
+                num_layers=config.num_decoder_layers,
                 num_heads=config.num_heads,
                 relative_attention_num_buckets=config.relative_attention_num_buckets,
                 relative_attention_max_distance=config.relative_attention_max_distance,
@@ -631,11 +819,13 @@ class MantaForConditionalGeneration(MantaPreTrainedModel):
                 layer_norm_epsilon=config.layer_norm_epsilon,
                 initializer_factor=config.initializer_factor,
                 feed_forward_proj=config.feed_forward_proj,
-                is_encoder_decoder=config.is_encoder_decoder,
                 use_cache=config.use_cache,
                 pad_token_id=config.pad_token_id,
                 eos_token_id=config.eos_token_id,
-            )
+                is_decoder=True,
+                is_encoder_decoder=False,
+            ),
+            self.decoder_embeddings,
         )
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
@@ -644,10 +834,10 @@ class MantaForConditionalGeneration(MantaPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.byte_embeddings
+        return self.encoder.get_input_embeddings()
 
     def set_input_embeddings(self, new_embeddings):
-        self.byte_embeddings = new_embeddings
+        self.encoder.set_input_embeddings(new_embeddings)
 
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
@@ -656,29 +846,12 @@ class MantaForConditionalGeneration(MantaPreTrainedModel):
         return self.lm_head
 
     def get_encoder(self):
-        return self.encoder_decoder.encoder
+        return self.encoder
 
     def get_decoder(self):
-        return self.encoder_decoder.decoder
+        return self.decoder
 
-    def _compute_pooled_representations(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.FloatTensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-    ):
-        if inputs_embeds is None and input_ids is None:
-            return None
-
-        byte_embeddings = inputs_embeds if inputs_embeds is not None else self.byte_embeddings(input_ids)
-
-        frontier_predictions = self.frontier_predictor(byte_embeddings, attention_mask)
-
-        pooled_representations = self.pooler(frontier_predictions, byte_embeddings)
-
-        return pooled_representations, frontier_predictions
-
-    @replace_return_docstrings(output_type=Seq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
+    @replace_return_docstrings(output_type=MantaSeq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -742,26 +915,23 @@ class MantaForConditionalGeneration(MantaPreTrainedModel):
                 warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
                 decoder_head_mask = head_mask
 
-        frontier_predictions = None
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
-            pooled_representations, frontier_predictions = self._compute_pooled_representations(
-                input_ids, attention_mask, inputs_embeds
-            )
-            # Convert encoder inputs in embeddings if needed
-            encoder_outputs = self.encoder_decoder.encoder(
-                inputs_embeds=pooled_representations,
+            encoder_outputs = self.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
                 head_mask=head_mask,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
-        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
-            frontier_predictions = None
+        elif return_dict and not isinstance(encoder_outputs, MantaBaseModelOutput):
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=encoder_outputs[0],
                 hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
                 attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
+                frontier_predictions=encoder_outputs[3] if len(encoder_outputs) > 3 else None,
             )
 
         hidden_states = encoder_outputs[0]
@@ -771,7 +941,7 @@ class MantaForConditionalGeneration(MantaPreTrainedModel):
             decoder_input_ids = self._shift_right(labels)
 
         # Decode
-        decoder_outputs = self.encoder_decoder.decoder(
+        decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
             inputs_embeds=decoder_inputs_embeds,
@@ -814,7 +984,7 @@ class MantaForConditionalGeneration(MantaPreTrainedModel):
             encoder_last_hidden_state=encoder_outputs.last_hidden_state,
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
-            frontier_predictions=frontier_predictions,
+            frontier_predictions=encoder_outputs.frontier_predictions,
         )
 
     def prepare_inputs_for_generation(
@@ -871,140 +1041,3 @@ class MantaForConditionalGeneration(MantaPreTrainedModel):
 
             reordered_decoder_past = reordered_decoder_past + (reordered_layer_past_states,)
         return reordered_decoder_past
-
-
-@add_start_docstrings(
-    "The bare Manta Model transformer outputting encoder's raw hidden-states without any specific head on top."
-)
-class MantaEncoderModel(MantaPreTrainedModel):
-    authorized_missing_keys = [
-        r"encoder.embed_tokens.weight",
-    ]
-
-    def __init__(self, config: T5Config):
-        super().__init__(config)
-        self.byte_embeddings = nn.Embedding(config.vocab_size, config.byte_embedding_dim)
-
-        self.frontier_predictor = MantaFrontierPredictor(
-            hidden_size=config.byte_embedding_dim,
-            num_layers=config.frontier_predictor_num_layers,
-            num_attention_heads=config.frontier_predictor_num_attention_heads,
-            dropout_rate=config.dropout_rate,
-            attention_window=config.frontier_predictor_attention_window,
-            max_length=config.max_length_inputs,
-        )
-
-        self.pooler = MantaCachedConvolutionPooling(
-            padding_length=config.max_length_encoder_decoder,
-            output_dim=config.d_model,
-            kernel_size=config.pooling_kernel_size,
-            hidden_dim=config.byte_embedding_dim,
-            depthwise_convolution=config.pooling_depthwise_convolution,
-            variance_regularization=config.pooling_variance_regularization,
-            mean_pool=config.pooling_mean_pool,
-        )
-
-        self.encoder = T5EncoderModel(
-            T5Config(
-                vocab_size=1,
-                d_model=config.d_model,
-                d_kv=config.d_kv,
-                d_ff=config.d_ff,
-                num_layers=config.num_layers,
-                num_decoder_layers=config.num_decoder_layers,
-                num_heads=config.num_heads,
-                relative_attention_num_buckets=config.relative_attention_num_buckets,
-                relative_attention_max_distance=config.relative_attention_max_distance,
-                dropout_rate=config.dropout_rate,
-                layer_norm_epsilon=config.layer_norm_epsilon,
-                initializer_factor=config.initializer_factor,
-                feed_forward_proj=config.feed_forward_proj,
-                is_encoder_decoder=config.is_encoder_decoder,
-                use_cache=config.use_cache,
-                pad_token_id=config.pad_token_id,
-                eos_token_id=config.eos_token_id,
-            )
-        )
-
-        # Initialize weights and apply final processing
-        self.post_init()
-
-    def get_input_embeddings(self):
-        return self.byte_embeddings
-
-    def set_input_embeddings(self, new_embeddings):
-        self.byte_embeddings = new_embeddings
-        self.encoder.set_input_embeddings(new_embeddings)
-
-    def get_encoder(self):
-        return self.encoder
-
-    def _prune_heads(self, heads_to_prune):
-        """
-        Prunes heads of the model. heads_to_prune: dict of {layer_num: list of heads to prune in this layer} See base
-        class PreTrainedModel
-        """
-        for layer, heads in heads_to_prune.items():
-            self.encoder_decoder.encoder.block[layer].layer[0].SelfAttention.prune_heads(heads)
-
-    def _compute_pooled_representations(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.FloatTensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-    ):
-        if inputs_embeds is None and input_ids is None:
-            return None
-
-        byte_embeddings = inputs_embeds if inputs_embeds is not None else self.byte_embeddings(input_ids)
-
-        frontier_predictions = self.frontier_predictor(byte_embeddings, attention_mask)
-
-        pooled_representations = self.pooler(frontier_predictions, byte_embeddings)
-
-        return pooled_representations
-
-    @replace_return_docstrings(output_type=BaseModelOutput, config_class=_CONFIG_FOR_DOC)
-    def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.FloatTensor] = None,
-        head_mask: Optional[torch.FloatTensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-    ) -> Union[Tuple[torch.FloatTensor], BaseModelOutput]:
-        r"""
-        Returns:
-
-        Example:
-
-        ```python
-        >>> from transformers import ByT5Tokenizer, MantaEncoderModel
-
-        >>> tokenizer = ByT5Tokenizer.from_pretrained("google/byt5-small")
-        >>> model = MantaEncoderModel.from_pretrained("nthngdy/manta-small")
-        >>> input_ids = tokenizer(
-        ...     "Studies have been shown that owning a dog is good for you", return_tensors="pt"
-        ... ).input_ids  # Batch size 1
-        >>> outputs = model(input_ids=input_ids)
-        >>> last_hidden_states = outputs.last_hidden_state
-        ```"""
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        pooled_representations = self._compute_pooled_representations(input_ids, attention_mask, inputs_embeds)
-
-        encoder_outputs = self.encoder(
-            inputs_embeds=pooled_representations,
-            head_mask=head_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        return encoder_outputs
