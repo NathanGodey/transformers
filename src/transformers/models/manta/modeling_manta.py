@@ -516,7 +516,7 @@ class MantaEncoderModel(MantaPreTrainedModel):
             mean_pool=config.pooling_mean_pool,
         )
 
-        self.encoder = T5Stack(
+        self.t5_encoder = T5Stack(
             T5Config(
                 d_model=config.d_model,
                 d_kv=config.d_kv,
@@ -544,10 +544,6 @@ class MantaEncoderModel(MantaPreTrainedModel):
 
     def set_input_embeddings(self, new_embeddings):
         self.byte_embeddings = new_embeddings
-        self.encoder.set_input_embeddings(new_embeddings)
-
-    def get_encoder(self):
-        return self.encoder
 
     def _prune_heads(self, heads_to_prune):
         """
@@ -555,7 +551,7 @@ class MantaEncoderModel(MantaPreTrainedModel):
         class PreTrainedModel
         """
         for layer, heads in heads_to_prune.items():
-            self.encoder_decoder.encoder.block[layer].layer[0].SelfAttention.prune_heads(heads)
+            self.t5_encoder.block[layer].layer[0].SelfAttention.prune_heads(heads)
 
     def _compute_pooled_representations(
         self,
@@ -611,7 +607,7 @@ class MantaEncoderModel(MantaPreTrainedModel):
             input_ids, attention_mask, inputs_embeds
         )
 
-        encoder_outputs = self.encoder(
+        encoder_outputs = self.t5_encoder(
             inputs_embeds=pooled_representations,
             head_mask=head_mask,
             output_attentions=output_attentions,
